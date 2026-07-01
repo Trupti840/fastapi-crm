@@ -8,9 +8,16 @@ from typing import List
 from auth import hash_password, verify_password, create_access_token
 from schemas import LeadCreate, LeadUpdate, LeadResponse, UserCreate, UserLogin
 from auth import get_current_user
+from fastapi.templating import Jinja2Templates
+from fastapi import Request
+from fastapi.responses import HTMLResponse
+from fastapi import Form
+from fastapi.responses import RedirectResponse
 
 
 app = FastAPI()
+templates = Jinja2Templates(directory="templates")
+
 @app.get("/")
 def home():
     return {"message": "CRM is running!"}
@@ -96,6 +103,74 @@ def signup(user: UserCreate, db: Session = Depends(get_db)):
 
     return {"message": "User created"}
 
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    return templates.TemplateResponse(
+    name="login.html",
+    context={"request": request}
+)
+
+@app.post("/login-ui")
+def login_ui(
+    email: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    db_user = db.query(models.User).filter(models.User.email == email).first()
+
+    if not db_user or not verify_password(password, db_user.password):
+        return {"error": "Invalid credentials"}
+
+    token = create_access_token({"sub": db_user.email})
+
+    response = RedirectResponse(url="/dashboard", status_code=302)
+    response.set_cookie(key="token", value=token)
+
+    return response
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    leads = db.query(models.Lead).all()
+    statues = ["new", "contacted", "qualified", "lost", "won"]
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "leads": leads,
+        "statues": statues
+    })
+
+@app.get("/create-lead", response_class=HTMLResponse)
+def create_lead_page(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    users = db.query(models.User).all()  # ✅ fetch users
+    statues = ["new", "contacted", "qualified", "lost", "won"]  # ✅ define statuses
+
+    return templates.TemplateResponse(
+        "create_lead.html",
+        {
+            "request": request,
+            "users": users,   # ✅ pass to template
+            "statues": statues  # ✅ pass to template
+        }
+    )
+
+@app.post("/create-lead-ui")
+def create_lead_ui(
+    name: str = Form(...),
+    email: str = Form(...),
+    status: str = Form(None),
+    owner_id: int = Form(...),
+    db: Session = Depends(get_db)
+):
+    new_lead = models.Lead(name=name, email=email, status=status, owner_id=owner_id)
+    db.add(new_lead)
+    db.commit()
+
+    return RedirectResponse(url="/dashboard", status_code=302)
 
 @app.post("/login")
 def login(user: UserLogin, db: Session = Depends(get_db)):
@@ -110,5 +185,11 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     token = create_access_token({"sub": db_user.email})
 
     return {"access_token": token}
+
+@app.get("/logout")
+def logout():
+    response = RedirectResponse(url="/login", status_code=302)
+    response.delete_cookie("token")
+    return response
 
 Base.metadata.create_all(bind=engine)
